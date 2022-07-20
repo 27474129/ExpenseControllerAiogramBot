@@ -7,6 +7,7 @@ from .. import functions
 from aiogram.dispatcher import FSMContext
 from datetime import datetime
 from aiogram import filters
+from aiogram.utils.exceptions import Throttled
 
 import logging
 import re
@@ -15,6 +16,11 @@ import asyncio
 
 
 
+async def anti_flood(*args, **kwargs):
+    await asyncio.sleep(3)
+
+
+@dp.throttled(anti_flood, rate=3)
 @dp.message_handler(commands=[ "start" ])
 async def command_start_handler(message : types.Message) -> None:
     if (not functions.is_user_auth(message.from_user.id)):
@@ -26,7 +32,7 @@ async def command_start_handler(message : types.Message) -> None:
 
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.message_handler(is_user_authenticated.IsUserAuthenticated(), state=Client.daily_amount)
 async def set_daily_amount_handler(message : types.Message) -> None:
     try:
@@ -51,7 +57,7 @@ async def set_daily_amount_handler(message : types.Message) -> None:
 
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.callback_query_handler(text="change_daily_amount", state=Client.main)
 async def change_daily_amount_handler(callback : types.CallbackQuery) -> None:
     await callback.message.answer("<b>Введите сумму</b>, в рамках которой вы собираетесь тратиться ежедневно:")
@@ -59,7 +65,7 @@ async def change_daily_amount_handler(callback : types.CallbackQuery) -> None:
 
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.callback_query_handler(text="add_today_expense", state=Client.main)
 async def select_expense_category_handler(callback : types.CallbackQuery) -> None:
     categories = []
@@ -86,13 +92,13 @@ async def select_expense_category_handler(callback : types.CallbackQuery) -> Non
 
 
     await callback.message.answer(f"<b>Выберите категорию траты:</b>\n\n{messages}", reply_markup=back_button)
-    await Client.set_expense_category.set()
+    await Client.set_initial_expense_categories.set()
 
 
 
 
-
-@dp.message_handler(is_expense_category.IsExpenseCategory(), state=Client.set_expense_category)
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(is_expense_category.IsExpenseCategory(), state=Client.set_initial_expense_categories)
 async def set_expense_category_handler(message : types.Message, state : FSMContext) -> None:
     command = message.text
     mysql = Mysql()
@@ -121,7 +127,7 @@ async def set_expense_category_handler(message : types.Message, state : FSMConte
     await Client.set_expense.set()
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.message_handler(state=Client.set_expense)
 async def set_expense_handler(message : types.Message, state : FSMContext) -> None:
     async with state.proxy() as data:
@@ -159,6 +165,7 @@ async def set_expense_handler(message : types.Message, state : FSMContext) -> No
         # Выполнение и проверка на успех запроса
         if (not mysql.make_request(request, is_need_data=False)):
             logger.error("Failed to update expenses.expenses (line 151 in handlers/client.py)")
+            return
 
     # Если записи в бд нет
     else:
@@ -176,6 +183,7 @@ async def set_expense_handler(message : types.Message, state : FSMContext) -> No
         # Выполнение и проверка на успех запроса
         if (not mysql.make_request(request, is_need_data=False)):
             logger.error("Failed to insert new field in expenses (line 157 in handler/client.py)")
+            return
 
         # Обновление expenses таблицы, измение столбца expenses с null на expense, который совершил user
         request = f"UPDATE expenses SET expenses='{expense}' WHERE user_telegram_id='{message.from_user.id}' AND date='{date}';"
@@ -183,6 +191,7 @@ async def set_expense_handler(message : types.Message, state : FSMContext) -> No
         # Выполнение и проверка на успех запроса
         if (not mysql.make_request(request, is_need_data=False)):
             logger.error("Failed to update expenses.expenses (line 167 in handlers/client.py)")
+            return
 
 
     # Поиск строки в которой идет учет расходов, которые были совершены сегодня пользователем
@@ -202,6 +211,7 @@ async def set_expense_handler(message : types.Message, state : FSMContext) -> No
     # Выполнение и проверка на успех запроса
     if (not mysql.make_request(request_for_update_current_daily_amount, is_need_data=False)):
         logger.error("Failed to update expenses.current_daily_amount (line 178 in handlers/client.py)")
+        return
 
     # Если остаток положителен
     if (daily_amount > 0):
@@ -224,24 +234,201 @@ async def set_expense_handler(message : types.Message, state : FSMContext) -> No
 
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.callback_query_handler(text="check_current_amount", state=Client.main)
-async def check_current_amount_handler(callback : types.CallbackQuery):
+async def check_current_amount_handler(callback : types.CallbackQuery) -> None:
     current_daily_amount = functions.get_current_amount(callback.from_user.id)
     await callback.message.answer(f"<b>Оставшаяся сумма на день:</b>    {current_daily_amount} руб.",
                                   reply_markup=cl_inline.get_main_commands_inline_keyboard())
 
 
+@dp.throttled(anti_flood, rate=3)
+@dp.callback_query_handler(text="add_expense_category", state=Client.main)
+async def add_expense_category(callback : types.CallbackQuery) -> None:
+    await callback.message.answer("Введите название категории: ", reply_markup=back_button)
+    await Client.get_category_name.set()
+
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(state=Client.get_category_name)
+async def get_category_name_handler(message : types.Message, state : FSMContext) -> None:
+    async with state.proxy() as data:
+        data[ "category_name" ] = message.text
+
+    await message.answer("Введите команду которая будет отвечать за вызов вашей категории, например /repair")
+    await Client.get_category_command.set()
+
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(state=Client.get_category_command)
+async def get_category_command_handler(message : types.Message, state : FSMContext):
+    command = message.text
+
+    if (command[ 0 ] != "/"):
+        await message.answer("Первым символом должен идти обратный слеш: /, попробуйте еще раз: ")
+        return
+    match1 = re.findall(r"[a-z]", command[ 1 :  ])
+    match2 = re.findall(r"[A-Z]", command[ 1 :  ])
+    match3 = re.findall(r"[0-9]", command[ 1 :  ])
+
+    if (len(match1) + len(match2) + len(match3) != len(command[ 1 :  ])):
+        await message.answer("команда должна состоять только из английских букв и цифр, попробуйте еще раз: ")
+        return
+
+    mysql = Mysql()
+    request = f"SELECT * FROM users WHERE user_telegram_id='{message.from_user.id}';"
+    response = mysql.make_request(request, is_need_data=True)
+
+    current_categories = response[ 0 ][ "user_expense_categories" ]
+
+    new_category = ""
+    async with state.proxy() as data:
+        new_category += data[ "category_name" ]
+
+    new_category += command
+
+    updated_categories = current_categories + new_category + ";"
+
+    request_for_update_categories = f"UPDATE users SET user_expense_categories='{updated_categories}'\
+    WHERE user_telegram_id='{message.from_user.id}';"
+    if (not mysql.make_request(request_for_update_categories, is_need_data=False)):
+        logger.error("Failed to update users.user_expense_category (line 282 in handlers/client.py)")
+        return
+
+    await message.answer("<b>Категория успешно добавлена!</b>\n\nВыберите команду", reply_markup=cl_inline.get_main_commands_inline_keyboard())
+    await Client.main.set()
+
+
+
+@dp.throttled(anti_flood, rate=3)
+@dp.callback_query_handler(text="check_previous_expense", state=Client.main)
+async def check_previous_expense_handler(callback : types.CallbackQuery) -> None:
+    await callback.message.answer("Введите число, за которое вы хотите посмотреть траты", reply_markup=back_button)
+    await Client.get_date_and_show_expenses.set()
+
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(state=Client.get_date_and_show_expenses)
+async def get_date_and_show_expenses_handler(message : types.Message):
+    try:
+        day = int(message.text)
+    except Exception:
+        await message.answer("Число должно состоять только из цифр")
+        return
+
+    now = datetime.now()
+    date = f"{day}:{now.month}:{now.year}"
+
+    request_for_get_expenses = f"SELECT * FROM expenses WHERE user_telegram_id='{message.from_user.id}'\
+                               AND date='{date}';"
+
+
+    mysql = Mysql()
+    response = mysql.make_request(request_for_get_expenses, is_need_data=True)
+    if (len(response) == 0):
+        await message.answer("Вами не было совершено трат за указанное число, введите число еще раз:")
+        return
+
+
+    expenses = response[ 0 ][ "expenses" ].split(";")
+    parsed_expenses = ""
+    iteration_number = 0
+    for expense in expenses:
+        if (iteration_number == len(expenses) - 1):
+            break
+        parsed_expense = str()
+        first_part = re.findall(r".+:", expense)[ 0 ]
+        second_part = expense[ len(first_part) :  ]
+        parsed_expense += first_part + "  " + second_part
+        parsed_expenses += parsed_expense + " руб\n"
+        iteration_number += 1
+
+    await message.answer(f"<b>Траты за указанное число:</b>\n\n{parsed_expenses}")
+    await message.answer(f"<b>Оставшаяся сумма за указанное число:</b>  {response[ 0 ][ 'current_daily_amount' ]}", reply_markup=cl_inline.get_main_commands_inline_keyboard())
+    await Client.main.set()
+
+
+
+@dp.throttled(anti_flood, rate=3)
+@dp.callback_query_handler(text="delete_expense", state=Client.main)
+async def delete_expense_handler(callback : types.CallbackQuery):
+    await callback.message.answer("Введите число, за которое вы хотите удалить трату:", reply_markup=back_button)
+    await Client.get_date.set()
+
+
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(state=Client.get_date)
+async def get_date_handler(message : types.Message, state : FSMContext):
+    try:
+        day = int(message.text)
+    except Exception:
+        await message.answer("Число должно состоять только из цифр, попробуйте еще раз:")
+        return
+
+    now = datetime.now()
+    date = f"{day}:{now.month}:{now.year}"
+
+    async with state.proxy() as data:
+        data[ "date" ] = date
+
+    await message.answer("Введите название категории, трату в которой вы хотите удалить:")
+    await Client.get_category.set()
+
+
+@dp.throttled(anti_flood, rate=3)
+@dp.message_handler(state=Client.get_category)
+async def get_category(message : types.Message, state : FSMContext):
+    async with state.proxy() as data:
+        date = data[ "date" ]
+    category_name = message.text
+
+    request_for_get_expenses = f"SELECT * FROM expenses WHERE user_telegram_id='{message.from_user.id}'\
+    AND date='{date}';"
+    mysql = Mysql()
+    response = mysql.make_request(request_for_get_expenses, is_need_data=True)
+
+    if (len(response) == 0):
+        await message.answer("Траты за указанное число не найдены, попробуйте еще раз")
+        await Client.main.set()
+        return
+
+    expenses = response[ 0 ][ "expenses" ].split(";")
+    updated_expenses = str()
+    is_find = False
+    iteration_number = 0
+    for expense in expenses:
+        if (iteration_number == len(expenses) - 1):
+            break
+        match = re.findall(r".+:", expense)[ 0 ]
+        category = match[ 0 : len(match) - 1 ]
+
+        if (category == category_name):
+            is_find = True
+        else:
+            updated_expenses += expense + ";"
+        iteration_number += 1
+
+    if (not is_find):
+        await message.answer("<b>Таких трат за указанное число не найдено</b>", reply_markup=cl_inline.get_main_commands_inline_keyboard())
+        await Client.main.set()
+        return
+
+    request_for_change_expenses = f"UPDATE expenses SET expenses='{updated_expenses}' WHERE user_telegram_id='{message.from_user.id}' AND date='{date}';"
+    if (not mysql.make_request(request_for_change_expenses, is_need_data=False)):
+        logger.error("Failed to update expenses.expenses (line 406 in handlers/client.py)")
+        return
+
+
+    await message.answer("<b>Трата успешно удалена!</b>", reply_markup=cl_inline.get_main_commands_inline_keyboard())
+    await Client.main.set()
 
 
 
 @dp.message_handler(state=Client.main)
+@dp.throttled(anti_flood, rate=3)
 async def general_main_state_handler(message : types.Message) -> None:
     main_commands_keyboard = cl_inline.get_main_commands_inline_keyboard()
     await message.answer("Выберите одну из предложенных команд: ", reply_markup=main_commands_keyboard)
 
 
-
+@dp.throttled(anti_flood, rate=3)
 @dp.message_handler()
 async def general_handler(message : types.Message, state : FSMContext) -> None:
     if (functions.is_user_auth(message.from_user.id)):
@@ -253,4 +440,3 @@ async def general_handler(message : types.Message, state : FSMContext) -> None:
         await message.answer("Выберите одну из предложенных команд: ", reply_markup=main_commands_keyboard)
     else:
         await message.answer("У вас еще нет аккауна: нажмите /start чтобы его создать")
-
