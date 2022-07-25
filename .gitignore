@@ -2,3 +2,4 @@
 **/__pycache__/
 TT.txt
 /.idea
+/docker-compose.yml
